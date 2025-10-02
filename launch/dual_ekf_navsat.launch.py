@@ -1,12 +1,16 @@
+#!/usr/bin/env python3
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.substitutions import ThisLaunchFileDir
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
-    params = [ThisLaunchFileDir().replace('launch', 'config') + '/dual_ekf_navsat_params.yaml']
+    params_file = PathJoinSubstitution([
+        FindPackageShare('gnss_waypoints_nav'), 'config', 'dual_ekf_navsat_params.yaml'
+    ])
 
     return LaunchDescription([
-        # 1) Yaw из F9RState -> ENU IMU (курс), можно быстро крутить yaw_offset_deg
+        # 1) F9R yaw -> IMU (публикует /imu/data)
         Node(
             package='gnss_waypoints_nav',
             executable='f9r_state_to_imu',
@@ -17,42 +21,55 @@ def generate_launch_description():
                 'imu_topic': '/imu/data',
                 'imu_frame': 'base_link',
                 'covariance': 0.05,
-                # Быстрый софт-сдвиг курса, если есть постоянный оффсет
                 'yaw_offset_deg': 0.0
             }]
         ),
 
-        # 2) Статический TF base_link -> gps_antenna (плечо антенны). Сейчас антенна в центре => (0,0,0)
+        # 2) Статический TF. ВАРИАНТ 1: у тебя сейчас frame_id у GPS = "gps"
         Node(
-            package='gnss_waypoints_nav',
-            executable='gps_static_tf_pub',
+            package='tf2_ros',
+            executable='static_transform_publisher',
             name='gps_static_tf_pub',
+            arguments=['0','0','0','0','0','0','base_link','gps'],   # <-- child = gps
+            output='screen'
+        ),
+        # Если позже поменяешь frame_id драйвера на "gps_antenna", здесь тоже поменяешь 'gps' -> 'gps_antenna'.
+
+        # 3) EKF(odom)
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node_odom',
             output='screen',
-            parameters=[{
-                'base_frame': 'base_link',
-                'gps_frame':  'gps_antenna',
-                'x': 0.0, 'y': 0.0, 'z': 0.0,
-                'roll_deg': 0.0, 'pitch_deg': 0.0, 'yaw_deg': 0.0
-            }]
+            parameters=[params_file],
+            remappings=[('/odometry/filtered', '/odometry/filtered')]
         ),
 
-        # 3) EKF-odom
-        Node(package='robot_localization', executable='ekf_node', name='ekf_filter_node_odom',
-             output='screen', parameters=params,
-             remappings=[('/odometry/filtered', '/odometry/filtered')]),
+        # 4) EKF(map)
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node_map',
+            output='screen',
+            parameters=[params_file],
+            remappings=[('/odometry/filtered', '/odometry/global')]
+        ),
 
-        # 4) EKF-map
-        Node(package='robot_localization', executable='ekf_node', name='ekf_filter_node_map',
-             output='screen', parameters=params,
-             remappings=[('/odometry/filtered', '/odometry/global')]),
-
-        # 5) navsat_transform (GNSS -> /odometry/gps) с реальными топиками
-        Node(package='robot_localization', executable='navsat_transform_node', name='navsat_transform',
-             output='screen', parameters=params,
-             remappings=[
-                 ('/imu/data', '/imu/data'),
-                 ('/gps/fix', '/ublox_gps_node/fix'),
-                 ('/odometry/filtered', '/odometry/filtered'),
-                 ('/odometry/gps', '/odometry/gps')
-             ])
+        # 5) navsat_transform с ПРАВИЛЬНЫМИ ремапами
+        Node(
+            package='robot_localization',
+            executable='navsat_transform_node',
+            name='navsat_transform',
+            output='screen',
+            parameters=[
+                params_file,
+                {'base_link_frame': 'base_link'}   # ← явная установка при запуске
+            ],
+            remappings=[
+                ('/imu', '/imu/data'),
+                ('/gps/fix', '/ublox_gps_node/fix'),
+                ('/odometry/filtered', '/odometry/filtered'),
+                ('/odometry/gps', '/odometry/gps')
+            ]
+        ),
     ])
