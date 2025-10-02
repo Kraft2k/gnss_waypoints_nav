@@ -55,6 +55,11 @@ class YawFloatToImu(Node):
         imu.header.frame_id = self.imu_frame
         imu.orientation = yaw_to_quat(yaw_enu)
         imu.orientation_covariance = [self.cov,0,0, 0,self.cov,0, 0,0,self.cov]
+        imu.orientation_covariance = [
+            float(self.cov), 0.0, 0.0,
+            0.0, float(self.cov), 0.0,
+            0.0, 0.0, float(self.cov)
+        ]
         self.pub.publish(imu)
 
 def main():
